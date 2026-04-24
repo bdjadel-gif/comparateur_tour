@@ -1,8 +1,8 @@
 import streamlit as st
-from openai import OpenAI
-from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
+from sentence_transformers import SentenceTransformer
+import openai
 
 # =========================
 # CONFIG STREAMLIT
@@ -14,9 +14,9 @@ st.set_page_config(
 )
 
 # =========================
-# OPENAI CLIENT
+# OPENAI KEY
 # =========================
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # =========================
 # NLP MODEL
@@ -28,7 +28,7 @@ def load_model():
 model = load_model()
 
 # =========================
-# UTILS
+# UTILS NLP
 # =========================
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
@@ -67,40 +67,40 @@ def build_matches(text1, text2):
 
 
 # =========================
-# GPT ANALYSIS
+# GPT ANALYSIS (VERSION COMPATIBLE)
 # =========================
 def gpt_analyze(matches):
 
     prompt = f"""
 Tu es un expert en analyse de contenus touristiques.
 
-Tu compares :
-- Texte 1 = fournisseur (version actuelle)
-- Texte 2 = catalogue client (version ancienne)
+Compare ces deux versions :
+- Texte 1 = fournisseur (actuel)
+- Texte 2 = catalogue client (ancien)
 
-Voici les correspondances phrase par phrase :
+Voici les correspondances :
 {matches}
 
-Donne une analyse structurée en français avec :
+Réponds en français avec :
 
 🟢 1. Résumé global
-🔵 2. Différences principales (claires et concrètes)
-⚠️ 3. Éléments manquants ou modifiés dans le catalogue
-🧭 4. Conclusion métier : faut-il mettre à jour le catalogue ?
+🔵 2. Différences principales
+⚠️ 3. Éléments manquants ou modifiés
+🧭 4. Conclusion métier (mise à jour nécessaire ou non)
 
-Sois clair, professionnel et orienté tourisme.
+Sois clair et structuré.
 """
 
-    response = client.chat.completions.create(
+    response = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Tu es un expert en contenu touristique et en analyse de catalogues."},
+            {"role": "system", "content": "Tu es un expert en analyse de contenus touristiques."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3
     )
 
-    return response.choices[0].message.content
+    return response["choices"][0]["message"]["content"]
 
 
 # =========================
@@ -112,10 +112,10 @@ st.write("Compare un texte fournisseur (Texte 1) avec ton catalogue (Texte 2)")
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte 1 (Fournisseur - source actuelle)", height=250)
+    text1 = st.text_area("📄 Texte 1 (Fournisseur)", height=250)
 
 with col2:
-    text2 = st.text_area("📄 Texte 2 (Catalogue - version ancienne)", height=250)
+    text2 = st.text_area("📄 Texte 2 (Catalogue)", height=250)
 
 
 # =========================
@@ -133,30 +133,21 @@ if st.button("Analyser les différences"):
                 st.warning("Textes insuffisants pour analyse.")
                 st.stop()
 
-            # score global
+            # SCORE GLOBAL
             global_score = np.mean([m["similarité (%)"] for m in matches])
 
-            # =========================
-            # SCORE
-            # =========================
             st.subheader("📊 Niveau d’alignement")
             st.metric("Similarité globale", f"{global_score:.2f}%")
             st.progress(min(global_score / 100, 1.0))
 
-            # =========================
             # GPT ANALYSIS
-            # =========================
-            st.subheader("🧠 Analyse IA")
-
+            st.subheader("🧠 Analyse IA (GPT)")
             analysis = gpt_analyze(matches)
             st.markdown(analysis)
 
-            # =========================
-            # TABLE DATA
-            # =========================
+            # TABLE
             st.subheader("🔎 Détails comparatifs")
-
             st.dataframe(matches, use_container_width=True)
 
     else:
-        st.warning("Veuillez remplir les deux textes avant de lancer l'analyse.")
+        st.warning("Veuillez remplir les deux textes.")
