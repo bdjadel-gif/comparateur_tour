@@ -1,20 +1,18 @@
 import streamlit as st
+from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
-from sentence_transformers import SentenceTransformer
+import pandas as pd
 
 # =========================
-# CONFIG STREAMLIT
+# CONFIG
 # =========================
 st.set_page_config(
-    page_title="Comparateur fournisseur / catalogue",
+    page_title="Détection de changements fournisseur",
     page_icon="🔍",
     layout="wide"
 )
 
-# =========================
-# MODEL NLP
-# =========================
 @st.cache_resource
 def load_model():
     return SentenceTransformer("all-MiniLM-L6-v2")
@@ -24,101 +22,131 @@ model = load_model()
 # =========================
 # FUNCTIONS
 # =========================
+def cosine_similarity(v1, v2):
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+
+
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
 
 
-def cosine(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def compute_matrix(sentences1, sentences2):
+    emb1 = model.encode(sentences1)
+    emb2 = model.encode(sentences2)
+
+    matrix = np.zeros((len(sentences1), len(sentences2)))
+
+    for i, e1 in enumerate(emb1):
+        for j, e2 in enumerate(emb2):
+            matrix[i][j] = cosine_similarity(e1, e2)
+
+    return matrix
 
 
-def compare_texts(text1, text2):
+def detect_changes(text1, text2):
 
     s1 = split_sentences(text1)
     s2 = split_sentences(text2)
 
-    if len(s1) == 0 or len(s2) == 0:
-        return 0, []
+    if not s1 or not s2:
+        return None, None, None
 
-    emb1 = model.encode(s1)
-    emb2 = model.encode(s2)
+    matrix = compute_matrix(s1, s2)
 
     results = []
 
-    for i, e1 in enumerate(emb1):
-        sims = [cosine(e1, e2) for e2 in emb2]
-
-        best_score = max(sims)
+    for i in range(len(s1)):
+        best_j = np.argmax(matrix[i])
+        best_score = matrix[i][best_j]
 
         results.append({
-            "Texte fournisseur (1)": s1[i],
-            "Similarité (%)": round(best_score * 100, 2)
+            "fournisseur (Texte 1)": s1[i],
+            "catalogue (Texte 2)": s2[best_j] if best_score > 0.3 else "❌ absent",
+            "similarité (%)": round(best_score * 100, 2)
         })
 
-    global_score = np.mean([r["Similarité (%)"] for r in results])
+    global_score = np.mean(matrix.max(axis=1)) * 100
 
-    return global_score, results
+    return global_score, results, matrix
 
 
 def recommendation(score):
 
-    if score >= 85:
-        return "🟢 Catalogue aligné avec le fournisseur (OK)"
-    elif score >= 65:
-        return "🟠 Quelques différences → mise à jour partielle recommandée"
+    if score > 85:
+        return "🟢 Catalogue à jour (aligné avec le fournisseur)"
+    elif score > 65:
+        return "🟠 Écarts détectés → mise à jour partielle recommandée"
     else:
-        return "🔴 Catalogue obsolète → mise à jour nécessaire"
+        return "🔴 Catalogue obsolète → mise à jour urgente requise"
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Comparateur fournisseur vs catalogue")
-st.write("Analyse automatique des différences entre texte fournisseur et catalogue")
+st.title("🔍 Détection de changements fournisseur")
+st.write("Compare un texte fournisseur (Texte 1) avec ton catalogue (Texte 2)")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte fournisseur (actuel)", height=250)
+    text1 = st.text_area("📄 Texte 1 (Fournisseur - source actuelle)", height=250)
 
 with col2:
-    text2 = st.text_area("📄 Texte catalogue (ancien)", height=250)
+    text2 = st.text_area("📄 Texte 2 (Ton catalogue)", height=250)
+
 
 # =========================
 # ACTION
 # =========================
-if st.button("Analyser"):
+if st.button("Analyser les changements"):
 
     if text1 and text2:
 
-        with st.spinner("Analyse en cours..."):
+        score, results, matrix = detect_changes(text1, text2)
 
-            score, results = compare_texts(text1, text2)
+        # =========================
+        # 1. SCORE GLOBAL
+        # =========================
+        st.subheader("📊 Niveau d’alignement avec le fournisseur")
+        st.metric("Alignement", f"{score:.2f}%")
 
-            # sécurisation du score (IMPORTANT)
-            score_value = float(score) if score is not None else 0
-            score_value = max(0.0, min(score_value / 100, 1.0))
+        st.progress(min(score / 100, 1.0))
 
-            # =========================
-            # SCORE
-            # =========================
-            st.subheader("📊 Score de similarité global")
+        # =========================
+        # 2. RECOMMANDATION
+        # =========================
+        st.subheader("🧠 Décision métier")
+        st.info(recommendation(score))
 
-            st.metric("Similarité", f"{score:.2f}%")
-            st.progress(score_value)
+        # =========================
+        # 3. TABLE COMPARATIVE
+        # =========================
+        st.subheader("🔎 Changements détectés")
 
-            # =========================
-            # RECOMMANDATION
-            # =========================
-            st.subheader("🧠 Recommandation métier")
-            st.info(recommendation(score))
+        df = pd.DataFrame(results)
 
-            # =========================
-            # DÉTAILS
-            # =========================
-            st.subheader("🔎 Analyse détaillée")
+        def highlight(score):
+            if score > 75:
+                return "🟢 OK"
+            elif score > 50:
+                return "🟠 Différence"
+            else:
+                return "🔴 Problème"
 
-            st.dataframe(results, use_container_width=True)
+        df["statut"] = df["similarité (%)"].apply(highlight)
+
+        st.dataframe(df, use_container_width=True)
+
+        # =========================
+        # 4. ALERTES
+        # =========================
+        st.subheader("⚠️ Points d’attention")
+
+        obsolete = df[df["catalogue (Texte 2)"] == "❌ absent"]
+
+        if len(obsolete) > 0:
+            st.warning("Certaines informations du fournisseur ne sont pas présentes dans ton catalogue.")
+            st.dataframe(obsolete)
 
     else:
-        st.warning("Veuillez remplir les deux textes avant analyse")
+        st.warning("Veuillez remplir les deux textes.")
