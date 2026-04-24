@@ -2,70 +2,134 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
+import pandas as pd
 
-# --- Model ---
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# =========================
+# CONFIG
+# =========================
+st.set_page_config(
+    page_title="Comparateur de textes touristiques",
+    page_icon="🔍",
+    layout="wide"
+)
 
-# --- Utils ---
+@st.cache_resource
+def load_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+model = load_model()
+
+# =========================
+# FUNCTIONS
+# =========================
 def cosine_similarity(v1, v2):
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+
 
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
 
-def compare_texts(text1, text2):
-    sent1 = split_sentences(text1)
-    sent2 = split_sentences(text2)
 
-    emb1 = model.encode(sent1)
-    emb2 = model.encode(sent2)
+def match_sentences(sentences1, sentences2):
+    emb1 = model.encode(sentences1)
+    emb2 = model.encode(sentences2)
 
-    results = []
+    pairs = []
 
     for i, e1 in enumerate(emb1):
         sims = [cosine_similarity(e1, e2) for e2 in emb2]
-        best = max(sims) if sims else 0
 
-        if best > 0.75:
-            label = "🟢 similaire"
-        elif best > 0.4:
-            label = "🟠 partiellement similaire"
-        else:
-            label = "🔴 différent"
+        best_idx = int(np.argmax(sims)) if sims else None
+        best_score = float(max(sims)) if sims else 0
 
-        results.append({
-            "sentence": sent1[i],
-            "score": round(best * 100, 2),
-            "label": label
+        pairs.append({
+            "text1": sentences1[i],
+            "text2": sentences2[best_idx] if best_idx is not None else "",
+            "score": best_score * 100
         })
 
-    # global score
-    global_score = np.mean([r["score"] for r in results]) if results else 0
+    return pairs
 
-    return global_score, results
 
-# --- UI ---
-st.title("🔍 Comparateur de textes touristiques")
+def recommendation(global_score):
 
-st.write("Compare deux descriptions d'activités touristiques et analyse leurs similarités.")
+    if global_score > 80:
+        return "🟢 Texte 2 très proche → aucune mise à jour nécessaire"
+    elif global_score > 60:
+        return "🟠 Texte 2 partiellement différent → légère optimisation recommandée"
+    else:
+        return "🔴 Texte 2 trop différent → mise à jour fortement recommandée"
 
-text1 = st.text_area("Texte 1")
-text2 = st.text_area("Texte 2")
 
+# =========================
+# UI
+# =========================
+st.title("🔍 Comparateur intelligent de textes touristiques")
+st.write("Analyse sémantique + comparaison structurée + recommandation")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    text1 = st.text_area("📄 Texte 1 (référence)", height=250)
+
+with col2:
+    text2 = st.text_area("📄 Texte 2 (à comparer)", height=250)
+
+# =========================
+# ACTION
+# =========================
 if st.button("Comparer"):
 
     if text1 and text2:
 
-        score, results = compare_texts(text1, text2)
+        sentences1 = split_sentences(text1)
+        sentences2 = split_sentences(text2)
 
-        st.subheader(f"📊 Score global de similarité : {round(score, 2)}%")
+        if not sentences1 or not sentences2:
+            st.warning("Textes insuffisants pour analyse.")
+            st.stop()
 
-        st.divider()
+        pairs = match_sentences(sentences1, sentences2)
 
-        st.subheader("🔎 Analyse détaillée")
+        global_score = np.mean([p["score"] for p in pairs])
 
-        for r in results:
-            st.write(f"{r['label']} — {r['sentence']} ({r['score']}%)")
+        # =========================
+        # 1. SCORE GLOBAL
+        # =========================
+        st.subheader("📊 Score global de similarité")
+        st.metric("Similarité", f"{global_score:.2f}%")
+
+        st.progress(min(global_score / 100, 1.0))
+
+        # =========================
+        # 3. RECOMMANDATION
+        # =========================
+        st.subheader("🧠 Recommandation")
+        st.info(recommendation(global_score))
+
+        # =========================
+        # 2. TABLEAU COMPARATIF
+        # =========================
+        st.subheader("🔎 Comparatif détaillé")
+
+        df = pd.DataFrame(pairs)
+
+        # classification visuelle
+        def label(score):
+            if score > 75:
+                return "🟢 similaire"
+            elif score > 50:
+                return "🟠 partiel"
+            else:
+                return "🔴 différent"
+
+        df["niveau"] = df["score"].apply(label)
+        df["score"] = df["score"].round(2)
+
+        st.dataframe(
+            df[["text1", "text2", "score", "niveau"]],
+            use_container_width=True
+        )
 
     else:
-        st.warning("Veuillez entrer deux textes.")
+        st.warning("Veuillez remplir les deux textes.")
