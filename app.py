@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import re
 from scipy.optimize import linear_sum_assignment
-import matplotlib.pyplot as plt
 
 # =========================
 # CONFIG
@@ -22,7 +21,7 @@ def load_model():
 model = load_model()
 
 # =========================
-# NLP UTILS
+# NLP FUNCTIONS
 # =========================
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
@@ -32,15 +31,15 @@ def cosine_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-def explain_difference(score):
+def explain(score):
     if score > 0.85:
-        return "Très proche sémantiquement"
+        return "Très proche"
     elif score > 0.65:
-        return "Légère reformulation ou détail modifié"
+        return "Légère différence"
     elif score > 0.4:
-        return "Différence notable de formulation ou contenu"
+        return "Différence notable"
     else:
-        return "Contenu divergent ou ajout/suppression important"
+        return "Divergence forte"
 
 
 # =========================
@@ -57,7 +56,6 @@ def analyze(text1, text2):
     emb1 = model.encode(s1)
     emb2 = model.encode(s2)
 
-    # Similarity matrix
     matrix = np.zeros((len(s1), len(s2)))
 
     for i in range(len(s1)):
@@ -65,12 +63,12 @@ def analyze(text1, text2):
             matrix[i][j] = cosine_sim(emb1[i], emb2[j])
 
     # =========================
-    # GLOBAL SCORE
+    # SCORE GLOBAL
     # =========================
     global_score = np.mean(matrix.max(axis=1)) * 100
 
     # =========================
-    # OPTIMAL MATCHING
+    # MATCHING OPTIMAL
     # =========================
     cost = 1 - matrix
     row_ind, col_ind = linear_sum_assignment(cost)
@@ -80,8 +78,8 @@ def analyze(text1, text2):
 
     THRESHOLD = 0.55
 
-    # Matches optimaux
     for i, j in zip(row_ind, col_ind):
+
         score = matrix[i][j]
         used_cols.add(j)
 
@@ -94,39 +92,67 @@ def analyze(text1, text2):
         results.append({
             "phrase catalogue": s2[j],
             "phrase fournisseur": s1[i],
-            "similarité (%)": round(score * 100, 2),
-            "statut": status,
-            "explication": explain_difference(score)
+            "similarité": round(score * 100, 2),
+            "statut": status
         })
 
-    # =========================
-    # AJOUTS CATALOGUE
-    # =========================
+    # Ajouts catalogue
     for j in range(len(s2)):
         if j not in used_cols:
             results.append({
                 "phrase catalogue": s2[j],
                 "phrase fournisseur": "❌ absent",
-                "similarité (%)": 0,
-                "statut": "🟣 Ajout catalogue",
-                "explication": "Nouvelle information absente du texte fournisseur"
+                "similarité": 0,
+                "statut": "🟣 Ajout catalogue"
             })
 
-    return global_score, results, matrix, s1, s2
+    return global_score, results, s1, s2
+
+
+# =========================
+# TEXT GENERATION (NOUVEAU)
+# =========================
+def build_improved_catalog(results):
+
+    improved = []
+
+    for r in results:
+
+        cat = r["phrase catalogue"]
+        sup = r["phrase fournisseur"]
+        score = r["similarité"] / 100
+
+        # Ajout catalogue → on ignore dans version alignée
+        if sup == "❌ absent":
+            continue
+
+        # Très bon match → on garde fournisseur
+        if score >= 0.75:
+            improved.append(sup)
+
+        # Modifié → on privilégie fournisseur (version corrigée)
+        elif score >= 0.55:
+            improved.append(sup)
+
+        # Divergent → on signale correction
+        else:
+            improved.append(f"[À vérifier] {sup}")
+
+    return ". ".join(improved) + "."
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Comparateur fournisseur / catalogue sémantique")
+st.title("🔍 Comparateur fournisseur / catalogue intelligent")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte fournisseur (référence)", height=250)
+    text1 = st.text_area("📄 Texte fournisseur", height=250)
 
 with col2:
-    text2 = st.text_area("📄 Texte catalogue (interne)", height=250)
+    text2 = st.text_area("📄 Texte catalogue", height=250)
 
 
 # =========================
@@ -136,56 +162,33 @@ if st.button("Analyser"):
 
     if text1 and text2:
 
-        score, results, matrix, s1, s2 = analyze(text1, text2)
+        score, results, s1, s2 = analyze(text1, text2)
 
         # =========================
-        # SCORE GLOBAL
+        # SCORE
         # =========================
         st.subheader("📊 Score de compatibilité")
         st.metric("Compatibilité", f"{score:.2f}%")
         st.progress(min(score / 100, 1.0))
 
         # =========================
-        # HEATMAP
-        # =========================
-        st.subheader("🔥 Matrice de similarité")
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        im = ax.imshow(matrix, cmap="viridis")
-
-        ax.set_xticks(np.arange(len(s2)))
-        ax.set_yticks(np.arange(len(s1)))
-
-        ax.set_xticklabels(s2, rotation=45, ha="right")
-        ax.set_yticklabels(s1)
-
-        plt.colorbar(im, ax=ax)
-
-        st.pyplot(fig)
-
-        # =========================
-        # TABLE RESULTS
+        # TABLE
         # =========================
         st.subheader("📋 Analyse détaillée")
 
         df = pd.DataFrame(results)
 
-        st.dataframe(
-            df.sort_values(by="similarité (%)", ascending=False),
-            use_container_width=True
-        )
+        st.dataframe(df, use_container_width=True)
 
         # =========================
-        # PROBLEMES CRITIQUES
+        # 🔥 NOUVEAU : TEXTE AMÉLIORÉ
         # =========================
-        st.subheader("🚨 Écarts critiques")
+        st.subheader("✍️ Proposition de catalogue amélioré")
 
-        critical = df[df["statut"].isin(["🔴 Divergent", "🟣 Ajout catalogue"])]
+        improved_text = build_improved_catalog(results)
 
-        if not critical.empty:
-            st.dataframe(critical, use_container_width=True)
-        else:
-            st.success("Aucun écart critique détecté")
+        st.info("Version du catalogue alignée avec le fournisseur :")
+        st.write(improved_text)
 
     else:
         st.warning("Veuillez remplir les deux textes")
