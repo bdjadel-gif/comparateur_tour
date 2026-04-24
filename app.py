@@ -5,138 +5,121 @@ import numpy as np
 import re
 
 # ---------------- INIT ----------------
-st.set_page_config(page_title="Comparateur IA intelligent", layout="wide")
+st.set_page_config(page_title="Comparateur IA tourisme", layout="wide")
 
-st.title("🧠 Comparateur IA intelligent (niveau métier tourisme)")
-st.write("Compare texte fournisseur (vérité) vs catalogue marketing")
+st.title("🧠 Comparateur IA de textes touristiques (version métier)")
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# ---------------- PARAMÈTRES MÉTIER ----------------
-KEYWORDS_IMPORTANTS = [
-    "musée", "museum", "palais", "palace", "église", "church",
-    "tour", "tower", "place", "piazza", "monument", "arènes",
-    "balcon", "basilique", "cathédrale", "front de mer"
+# ---------------- CONFIG MÉTIER ----------------
+KEYWORDS = [
+    "musée", "palais", "tour", "église", "basilique",
+    "place", "monument", "pont", "château", "centre-ville",
+    "balcon", "arène", "galerie"
 ]
 
-WEIGHTS = {
-    "important": 1.5,
-    "normal": 1.0,
-    "marketing": 0.7
-}
-
 # ---------------- UTILS ----------------
-def split_blocks(text):
-    return [b.strip() for b in re.split(r'\n+', text) if len(b.strip()) > 20]
+def split_into_blocks(text):
+    # segmentation plus stable (paragraphes uniquement)
+    blocks = re.split(r'\n+', text)
+    return [b.strip() for b in blocks if len(b.strip()) > 25]
 
-def embed(texts):
-    return model.encode(texts)
+def embed(text_list):
+    return model.encode(text_list)
 
-def is_important(text):
-    return any(k in text.lower() for k in KEYWORDS_IMPORTANTS)
+def keyword_boost(text):
+    score = 1.0
+    for k in KEYWORDS:
+        if k.lower() in text.lower():
+            score += 0.05
+    return score
 
-def block_weight(text):
-    if is_important(text):
-        return WEIGHTS["important"]
-    return WEIGHTS["normal"]
+def compute_similarity(blocks_f, blocks_c):
+    emb_f = embed(blocks_f)
+    emb_c = embed(blocks_c)
 
-# ---------------- SIMILARITÉ ----------------
-def compute_similarity(f_blocks, c_blocks):
-    emb_f = embed(f_blocks)
-    emb_c = embed(c_blocks)
+    sim_matrix = cosine_similarity(emb_f, emb_c)
+    best_scores = sim_matrix.max(axis=1)
 
-    sim = cosine_similarity(emb_f, emb_c)
+    return best_scores, sim_matrix
 
-    best_scores = sim.max(axis=1)
-
-    weighted_scores = []
-    for i, score in enumerate(best_scores):
-        w = block_weight(f_blocks[i])
-        weighted_scores.append(score * w)
-
-    return best_scores, weighted_scores
-
-# ---------------- AJOUTS / OMISSIONS ----------------
-def detect_gaps(f_blocks, c_blocks):
-    emb_f = embed(f_blocks)
-    emb_c = embed(c_blocks)
-
-    sim = cosine_similarity(emb_c, emb_f)
-
-    omissions = []
-    for i, row in enumerate(sim.T):
-        if max(row) < 0.55:
-            omissions.append(f_blocks[i])
-
-    sim2 = cosine_similarity(emb_f, emb_c)
-
-    ajouts = []
-    for i, row in enumerate(sim2.T):
-        if max(row) < 0.55:
-            ajouts.append(c_blocks[i])
-
-    return omissions, ajouts
-
-# ---------------- ANALYSE PRINCIPALE ----------------
+# ---------------- ANALYSE ----------------
 def analyze(fournisseur, catalogue):
 
-    f_blocks = split_blocks(fournisseur)
-    c_blocks = split_blocks(catalogue)
+    blocks_f = split_into_blocks(fournisseur)
+    blocks_c = split_into_blocks(catalogue)
 
-    base_scores, weighted_scores = compute_similarity(f_blocks, c_blocks)
+    scores, _ = compute_similarity(blocks_f, blocks_c)
 
-    omissions, ajouts = detect_gaps(f_blocks, c_blocks)
+    weighted_scores = []
 
-    # SCORE FINAL HYBRIDE
-    semantic_score = np.mean(weighted_scores) * 100
-    coverage_penalty = (len(omissions) / max(len(f_blocks), 1)) * 20
-    bonus_penalty = (len(ajouts) / max(len(c_blocks), 1)) * 10
+    correspondances = []
+    modifications = []
+    omissions = []
 
-    final_score = semantic_score - coverage_penalty - bonus_penalty
-    final_score = max(0, min(100, final_score))
+    # ---- analyse fournisseur vs catalogue ----
+    for i, score in enumerate(scores):
+        text = blocks_f[i]
 
-    # LABEL
-    if final_score >= 95:
-        label = "✅ Réécriture fidèle (niveau parfait)"
-    elif final_score >= 85:
-        label = "🟢 Très proche"
-    elif final_score >= 70:
-        label = "🟡 Différences modérées"
-    elif final_score >= 50:
-        label = "🟠 Différences importantes"
+        boost = keyword_boost(text)
+        final_score = score * boost
+
+        weighted_scores.append(final_score)
+
+        if final_score > 0.75:
+            correspondances.append(text)
+        elif final_score > 0.5:
+            modifications.append(text)
+        else:
+            omissions.append(text)
+
+    # ---- détection ajouts catalogue ----
+    scores_c, _ = compute_similarity(blocks_c, blocks_f)
+
+    ajouts = []
+    for i, score in enumerate(scores_c):
+        if score < 0.55:
+            ajouts.append(blocks_c[i])
+
+    # ---------------- SCORE FINAL ----------------
+    base_score = np.mean(weighted_scores) * 100
+
+    # stabilisation (évite sous-estimation)
+    adjusted_score = (base_score * 0.85) + 15
+
+    adjusted_score = min(98, max(40, adjusted_score))
+
+    # ---------------- LABEL ----------------
+    if adjusted_score >= 92:
+        label = "🟢 Réécriture fidèle"
+    elif adjusted_score >= 80:
+        label = "🟡 Légères différences"
+    elif adjusted_score >= 65:
+        label = "🟠 Différences notables"
     else:
         label = "🔴 Programme différent"
 
-    # correspondances fortes
-    correspondances = [
-        f_blocks[i] for i, s in enumerate(base_scores) if s > 0.75
-    ]
-
-    modifications = [
-        f_blocks[i] for i, s in enumerate(base_scores) if 0.55 <= s <= 0.75
-    ]
-
-    return final_score, label, f_blocks, correspondances, modifications, omissions, ajouts
+    return adjusted_score, label, blocks_f, correspondances, modifications, omissions, ajouts
 
 # ---------------- UI ----------------
 col1, col2 = st.columns(2)
 
 with col1:
-    fournisseur = st.text_area("📄 Texte fournisseur", height=300)
+    fournisseur = st.text_area("📄 Texte fournisseur (vérité)", height=300)
 
 with col2:
     catalogue = st.text_area("📝 Texte catalogue", height=300)
 
-if st.button("🔍 Analyser intelligemment"):
+if st.button("🔍 Comparer"):
 
     if fournisseur and catalogue:
 
         score, label, structure, corr, modif, omis, ajouts = analyze(fournisseur, catalogue)
 
-        st.subheader(f"📊 Score intelligent : {round(score,2)}%")
+        st.subheader(f"📊 Score de compatibilité : {round(score, 2)}%")
         st.markdown(f"### {label}")
 
-        st.progress(score / 100)
+        st.progress(int(score))
 
         st.divider()
 
@@ -144,21 +127,21 @@ if st.button("🔍 Analyser intelligemment"):
         for s in structure:
             st.write("•", s)
 
-        st.subheader("✅ Correspondances fortes")
+        st.subheader("✅ Correspondances")
         for c in corr:
-            st.success(c)
+            st.write("•", c)
 
         st.subheader("⚠️ Modifications")
         for m in modif:
-            st.warning(m)
+            st.write("•", m)
 
-        st.subheader("❌ Omissions (critique fournisseur)")
+        st.subheader("❌ Omissions (fournisseur non retrouvé)")
         for o in omis:
-            st.error(o)
+            st.write("•", o)
 
-        st.subheader("➕ Ajouts catalogue")
+        st.subheader("➕ Ajouts (catalogue uniquement)")
         for a in ajouts:
-            st.info(a)
+            st.write("•", a)
 
     else:
-        st.warning("Veuillez remplir les deux textes")
+        st.warning("Merci de remplir les deux textes")
