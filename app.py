@@ -2,24 +2,18 @@ import streamlit as st
 import numpy as np
 import re
 from sentence_transformers import SentenceTransformer
-import openai
 
 # =========================
-# CONFIG STREAMLIT
+# CONFIG
 # =========================
 st.set_page_config(
-    page_title="Analyse changements fournisseur",
+    page_title="Comparateur de textes",
     page_icon="🔍",
     layout="wide"
 )
 
 # =========================
-# OPENAI KEY
-# =========================
-openai.api_key = st.secrets["OPENAI_API_KEY"]
-
-# =========================
-# NLP MODEL
+# MODEL (IA simple)
 # =========================
 @st.cache_resource
 def load_model():
@@ -28,126 +22,65 @@ def load_model():
 model = load_model()
 
 # =========================
-# UTILS NLP
+# FUNCTIONS
 # =========================
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
 
 
-def cosine(v1, v2):
-    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+def cosine(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-def build_matches(text1, text2):
+def compare(text1, text2):
 
     s1 = split_sentences(text1)
     s2 = split_sentences(text2)
 
     if not s1 or not s2:
-        return []
+        return 0, []
 
     e1 = model.encode(s1)
     e2 = model.encode(s2)
 
-    matches = []
+    results = []
 
     for i, emb in enumerate(e1):
         sims = [cosine(emb, e) for e in e2]
+        best = max(sims)
 
-        best_idx = int(np.argmax(sims))
-        best_score = float(max(sims))
-
-        matches.append({
-            "texte_1": s1[i],
-            "texte_2": s2[best_idx] if best_score > 0.3 else "❌ absent",
-            "similarité (%)": round(best_score * 100, 2)
+        results.append({
+            "texte 1": s1[i],
+            "similarité (%)": round(best * 100, 2)
         })
 
-    return matches
+    global_score = np.mean([r["similarité (%)"] for r in results])
 
-
-# =========================
-# GPT ANALYSIS (VERSION COMPATIBLE)
-# =========================
-def gpt_analyze(matches):
-
-    prompt = f"""
-Tu es un expert en analyse de contenus touristiques.
-
-Compare ces deux versions :
-- Texte 1 = fournisseur (actuel)
-- Texte 2 = catalogue client (ancien)
-
-Voici les correspondances :
-{matches}
-
-Réponds en français avec :
-
-🟢 1. Résumé global
-🔵 2. Différences principales
-⚠️ 3. Éléments manquants ou modifiés
-🧭 4. Conclusion métier (mise à jour nécessaire ou non)
-
-Sois clair et structuré.
-"""
-
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Tu es un expert en analyse de contenus touristiques."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3
-    )
-
-    return response["choices"][0]["message"]["content"]
+    return global_score, results
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Analyse intelligente des changements fournisseur")
-st.write("Compare un texte fournisseur (Texte 1) avec ton catalogue (Texte 2)")
+st.title("🔍 Comparateur de textes touristiques simple")
 
-col1, col2 = st.columns(2)
+text1 = st.text_area("📄 Texte 1 (Fournisseur)", height=200)
+text2 = st.text_area("📄 Texte 2 (Catalogue)", height=200)
 
-with col1:
-    text1 = st.text_area("📄 Texte 1 (Fournisseur)", height=250)
-
-with col2:
-    text2 = st.text_area("📄 Texte 2 (Catalogue)", height=250)
-
-
-# =========================
-# ACTION
-# =========================
-if st.button("Analyser les différences"):
+if st.button("Comparer"):
 
     if text1 and text2:
 
-        with st.spinner("Analyse en cours..."):
+        score, results = compare(text1, text2)
 
-            matches = build_matches(text1, text2)
+        st.subheader("📊 Score global")
+        st.metric("Similarité", f"{score:.2f}%")
 
-            if not matches:
-                st.warning("Textes insuffisants pour analyse.")
-                st.stop()
+        st.progress(min(score / 100, 1.0))
 
-            # SCORE GLOBAL
-            global_score = np.mean([m["similarité (%)"] for m in matches])
+        st.subheader("🔎 Détails")
 
-            st.subheader("📊 Niveau d’alignement")
-            st.metric("Similarité globale", f"{global_score:.2f}%")
-            st.progress(min(global_score / 100, 1.0))
-
-            # GPT ANALYSIS
-            st.subheader("🧠 Analyse IA (GPT)")
-            analysis = gpt_analyze(matches)
-            st.markdown(analysis)
-
-            # TABLE
-            st.subheader("🔎 Détails comparatifs")
-            st.dataframe(matches, use_container_width=True)
+        st.dataframe(results)
 
     else:
-        st.warning("Veuillez remplir les deux textes.")
+        st.warning("Remplis les deux textes")
