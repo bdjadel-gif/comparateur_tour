@@ -79,7 +79,7 @@ if st.button("Comparer"):
         score_value = float(score) if score is not None else 0
 score_value = max(0.0, min(score_value / 100, 1.0))
 
-st.progress(score_value)
+        st.progress(score_value)
 
         st.subheader("🔎 Détails")
 
