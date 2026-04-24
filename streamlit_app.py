@@ -1,60 +1,64 @@
 import streamlit as st
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="Comparateur d'activités", layout="wide")
+st.set_page_config(page_title="Comparateur de descriptifs IA", layout="centered")
 
-st.title("🔍 Comparateur de descriptifs d'activités")
+st.title("🔍 Analyse de similarité entre deux descriptifs")
 
-text1 = st.text_area("Descriptif 1", height=300)
-text2 = st.text_area("Descriptif 2", height=300)
+st.write("Collez deux descriptifs pour analyser leur similarité et leurs différences.")
 
-def extract_info(text):
-    text = text.lower()
-    
-    data = {
-        "transport": "oui" if "hôtel" in text or "prise en charge" in text else "non",
-        "repas": "oui" if "déjeuner" in text else "non",
-        "durée": "mentionnée" if "heure" in text or "durée" in text else "non précisée",
-        "lieux": []
-    }
-    
-    lieux_possibles = ["kingston", "trenchtown", "orange street", "museum", "parc"]
-    
-    for lieu in lieux_possibles:
-        if lieu in text:
-            data["lieux"].append(lieu)
-    
-    return data
+# Inputs
+desc1 = st.text_area("📄 Descriptif 1", height=200)
+desc2 = st.text_area("📄 Descriptif 2", height=200)
 
-if st.button("Comparer"):
-    if text1 and text2:
-        data1 = extract_info(text1)
-        data2 = extract_info(text2)
-        
-        st.subheader("📊 Comparaison")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("### Descriptif 1")
-            st.json(data1)
-        
-        with col2:
-            st.write("### Descriptif 2")
-            st.json(data2)
-        
-        st.subheader("⚠️ Différences")
-        
-        differences = []
-        
-        for key in data1:
-            if data1[key] != data2[key]:
-                differences.append(f"{key} : {data1[key]} vs {data2[key]}")
-        
-        if differences:
-            for diff in differences:
-                st.write("- " + diff)
-        else:
-            st.success("Aucune différence détectée")
-    
+def compute_similarity(text1, text2):
+    vectorizer = TfidfVectorizer(stop_words="french")
+    tfidf = vectorizer.fit_transform([text1, text2])
+    score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
+    return score
+
+def extract_differences(text1, text2):
+    set1 = set(text1.lower().split())
+    set2 = set(text2.lower().split())
+
+    only_in_1 = sorted(list(set1 - set2))
+    only_in_2 = sorted(list(set2 - set1))
+
+    return only_in_1, only_in_2
+
+if st.button("🚀 Lancer l'analyse"):
+
+    if not desc1 or not desc2:
+        st.warning("Merci de remplir les deux descriptifs.")
     else:
-        st.warning("Merci de remplir les deux descriptifs")
+        # Similarité
+        score = compute_similarity(desc1, desc2)
+
+        st.subheader("📊 Score de similarité")
+        st.metric(label="Similarité (cosine TF-IDF)", value=f"{score*100:.2f} %")
+
+        # Interprétation simple
+        if score > 0.8:
+            st.success("Très forte similarité")
+        elif score > 0.5:
+            st.info("Similarité modérée")
+        else:
+            st.warning("Faible similarité")
+
+        # Différences
+        st.subheader("🧩 Différences détectées")
+
+        diff1, diff2 = extract_differences(desc1, desc2)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### 🔴 Uniquement dans le descriptif 1")
+            st.write(diff1[:200])
+
+        with col2:
+            st.markdown("### 🟢 Uniquement dans le descriptif 2")
+            st.write(diff2[:200])
+
+        st.caption("⚠️ Analyse basique par tokens. Pour une IA plus avancée, on peut intégrer spaCy ou embeddings OpenAI.")
