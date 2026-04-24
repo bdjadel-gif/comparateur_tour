@@ -1,17 +1,16 @@
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import re
 import pandas as pd
+import re
 from scipy.optimize import linear_sum_assignment
-import seaborn as sns
 import matplotlib.pyplot as plt
 
 # =========================
 # CONFIG
 # =========================
 st.set_page_config(
-    page_title="Détection de changements fournisseur",
+    page_title="Comparateur fournisseur / catalogue",
     page_icon="🔍",
     layout="wide"
 )
@@ -23,142 +22,151 @@ def load_model():
 model = load_model()
 
 # =========================
-# FUNCTIONS
+# NLP UTILS
 # =========================
-def cosine_similarity(v1, v2):
-    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-
-
 def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
 
 
-def detect_changes(text1, text2):
+def cosine_sim(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+
+def explain_difference(score):
+    if score > 0.85:
+        return "Très proche sémantiquement"
+    elif score > 0.65:
+        return "Légère reformulation ou détail modifié"
+    elif score > 0.4:
+        return "Différence notable de formulation ou contenu"
+    else:
+        return "Contenu divergent ou ajout/suppression important"
+
+
+# =========================
+# CORE ANALYSIS
+# =========================
+def analyze(text1, text2):
 
     s1 = split_sentences(text1)
     s2 = split_sentences(text2)
 
     if not s1 or not s2:
-        return None, None, None, None
+        return None
 
     emb1 = model.encode(s1)
     emb2 = model.encode(s2)
 
+    # Similarity matrix
     matrix = np.zeros((len(s1), len(s2)))
 
-    for i, e1 in enumerate(emb1):
-        for j, e2 in enumerate(emb2):
-            matrix[i][j] = cosine_similarity(e1, e2)
+    for i in range(len(s1)):
+        for j in range(len(s2)):
+            matrix[i][j] = cosine_sim(emb1[i], emb2[j])
+
+    # =========================
+    # GLOBAL SCORE
+    # =========================
+    global_score = np.mean(matrix.max(axis=1)) * 100
 
     # =========================
     # OPTIMAL MATCHING
     # =========================
-    cost_matrix = 1 - matrix
-    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    cost = 1 - matrix
+    row_ind, col_ind = linear_sum_assignment(cost)
 
-    matched_cols = set()
-
+    used_cols = set()
     results = []
+
     THRESHOLD = 0.55
 
+    # Matches optimaux
     for i, j in zip(row_ind, col_ind):
         score = matrix[i][j]
-        matched_cols.add(j)
+        used_cols.add(j)
 
-        if score >= THRESHOLD:
-            status = "🟢 OK"
-        elif score >= 0.3:
-            status = "🟠 Modifié"
-        else:
-            status = "🔴 Très différent"
+        status = (
+            "🟢 OK" if score > 0.75 else
+            "🟠 Modifié" if score > THRESHOLD else
+            "🔴 Divergent"
+        )
 
         results.append({
-            "fournisseur (Texte 1)": s1[i],
-            "catalogue (Texte 2)": s2[j],
+            "phrase catalogue": s2[j],
+            "phrase fournisseur": s1[i],
             "similarité (%)": round(score * 100, 2),
-            "statut": status
+            "statut": status,
+            "explication": explain_difference(score)
         })
 
-    # AJOUTS catalogue non matchés
+    # =========================
+    # AJOUTS CATALOGUE
+    # =========================
     for j in range(len(s2)):
-        if j not in matched_cols:
+        if j not in used_cols:
             results.append({
-                "fournisseur (Texte 1)": "❌ absent",
-                "catalogue (Texte 2)": s2[j],
+                "phrase catalogue": s2[j],
+                "phrase fournisseur": "❌ absent",
                 "similarité (%)": 0,
-                "statut": "🟣 Ajout catalogue"
+                "statut": "🟣 Ajout catalogue",
+                "explication": "Nouvelle information absente du texte fournisseur"
             })
 
-    global_score = np.mean(matrix.max(axis=1)) * 100
-
     return global_score, results, matrix, s1, s2
-
-
-def recommendation(score):
-
-    if score > 85:
-        return "🟢 Catalogue à jour (aligné avec le fournisseur)"
-    elif score > 65:
-        return "🟠 Écarts détectés → mise à jour partielle recommandée"
-    else:
-        return "🔴 Catalogue obsolète → mise à jour urgente requise"
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Détection de changements fournisseur")
-st.write("Compare un texte fournisseur avec ton catalogue")
+st.title("🔍 Comparateur fournisseur / catalogue sémantique")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte 1 (Fournisseur)", height=250)
+    text1 = st.text_area("📄 Texte fournisseur (référence)", height=250)
 
 with col2:
-    text2 = st.text_area("📄 Texte 2 (Catalogue)", height=250)
+    text2 = st.text_area("📄 Texte catalogue (interne)", height=250)
 
 
 # =========================
-# ACTION
+# RUN
 # =========================
-if st.button("Analyser les changements"):
+if st.button("Analyser"):
 
     if text1 and text2:
 
-        score, results, matrix, s1, s2 = detect_changes(text1, text2)
+        score, results, matrix, s1, s2 = analyze(text1, text2)
 
         # =========================
         # SCORE GLOBAL
         # =========================
-        st.subheader("📊 Niveau d’alignement")
-        st.metric("Alignement", f"{score:.2f}%")
+        st.subheader("📊 Score de compatibilité")
+        st.metric("Compatibilité", f"{score:.2f}%")
         st.progress(min(score / 100, 1.0))
-
-        # =========================
-        # RECOMMANDATION
-        # =========================
-        st.subheader("🧠 Décision métier")
-        st.info(recommendation(score))
 
         # =========================
         # HEATMAP
         # =========================
-        st.subheader("🔥 Carte des similarités")
+        st.subheader("🔥 Matrice de similarité")
 
         fig, ax = plt.subplots(figsize=(10, 5))
-        sns.heatmap(matrix, annot=False, cmap="YlGnBu",
-                    xticklabels=s2, yticklabels=s1, ax=ax)
+        im = ax.imshow(matrix, cmap="viridis")
 
-        plt.xticks(rotation=45, ha="right")
-        plt.yticks(rotation=0)
+        ax.set_xticks(np.arange(len(s2)))
+        ax.set_yticks(np.arange(len(s1)))
+
+        ax.set_xticklabels(s2, rotation=45, ha="right")
+        ax.set_yticklabels(s1)
+
+        plt.colorbar(im, ax=ax)
 
         st.pyplot(fig)
 
         # =========================
-        # TABLE RESULTATS
+        # TABLE RESULTS
         # =========================
-        st.subheader("🔎 Détail des différences")
+        st.subheader("📋 Analyse détaillée")
 
         df = pd.DataFrame(results)
 
@@ -168,11 +176,11 @@ if st.button("Analyser les changements"):
         )
 
         # =========================
-        # ECARTS CRITIQUES
+        # PROBLEMES CRITIQUES
         # =========================
         st.subheader("🚨 Écarts critiques")
 
-        critical = df[df["statut"].isin(["🔴 Très différent", "🟣 Ajout catalogue"])]
+        critical = df[df["statut"].isin(["🔴 Divergent", "🟣 Ajout catalogue"])]
 
         if not critical.empty:
             st.dataframe(critical, use_container_width=True)
@@ -180,4 +188,4 @@ if st.button("Analyser les changements"):
             st.success("Aucun écart critique détecté")
 
     else:
-        st.warning("Veuillez remplir les deux textes.")
+        st.warning("Veuillez remplir les deux textes")
