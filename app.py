@@ -8,7 +8,7 @@ import pandas as pd
 # CONFIG
 # =========================
 st.set_page_config(
-    page_title="Comparateur de textes touristiques",
+    page_title="Détection de changements fournisseur",
     page_icon="🔍",
     layout="wide"
 )
@@ -30,106 +30,123 @@ def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
 
 
-def match_sentences(sentences1, sentences2):
+def compute_matrix(sentences1, sentences2):
     emb1 = model.encode(sentences1)
     emb2 = model.encode(sentences2)
 
-    pairs = []
+    matrix = np.zeros((len(sentences1), len(sentences2)))
 
     for i, e1 in enumerate(emb1):
-        sims = [cosine_similarity(e1, e2) for e2 in emb2]
+        for j, e2 in enumerate(emb2):
+            matrix[i][j] = cosine_similarity(e1, e2)
 
-        best_idx = int(np.argmax(sims)) if sims else None
-        best_score = float(max(sims)) if sims else 0
+    return matrix
 
-        pairs.append({
-            "text1": sentences1[i],
-            "text2": sentences2[best_idx] if best_idx is not None else "",
-            "score": best_score * 100
+
+def detect_changes(text1, text2):
+
+    s1 = split_sentences(text1)
+    s2 = split_sentences(text2)
+
+    if not s1 or not s2:
+        return None, None, None
+
+    matrix = compute_matrix(s1, s2)
+
+    results = []
+
+    for i in range(len(s1)):
+        best_j = np.argmax(matrix[i])
+        best_score = matrix[i][best_j]
+
+        results.append({
+            "fournisseur (Texte 1)": s1[i],
+            "catalogue (Texte 2)": s2[best_j] if best_score > 0.3 else "❌ absent",
+            "similarité (%)": round(best_score * 100, 2)
         })
 
-    return pairs
+    global_score = np.mean(matrix.max(axis=1)) * 100
+
+    return global_score, results, matrix
 
 
-def recommendation(global_score):
+def recommendation(score):
 
-    if global_score > 80:
-        return "🟢 Texte 2 très proche → aucune mise à jour nécessaire"
-    elif global_score > 60:
-        return "🟠 Texte 2 partiellement différent → légère optimisation recommandée"
+    if score > 85:
+        return "🟢 Catalogue à jour (aligné avec le fournisseur)"
+    elif score > 65:
+        return "🟠 Écarts détectés → mise à jour partielle recommandée"
     else:
-        return "🔴 Texte 2 trop différent → mise à jour fortement recommandée"
+        return "🔴 Catalogue obsolète → mise à jour urgente requise"
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Comparateur intelligent de textes touristiques")
-st.write("Analyse sémantique + comparaison structurée + recommandation")
+st.title("🔍 Détection de changements fournisseur")
+st.write("Compare un texte fournisseur (Texte 1) avec ton catalogue (Texte 2)")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte 1 (référence)", height=250)
+    text1 = st.text_area("📄 Texte 1 (Fournisseur - source actuelle)", height=250)
 
 with col2:
-    text2 = st.text_area("📄 Texte 2 (à comparer)", height=250)
+    text2 = st.text_area("📄 Texte 2 (Ton catalogue)", height=250)
+
 
 # =========================
 # ACTION
 # =========================
-if st.button("Comparer"):
+if st.button("Analyser les changements"):
 
     if text1 and text2:
 
-        sentences1 = split_sentences(text1)
-        sentences2 = split_sentences(text2)
-
-        if not sentences1 or not sentences2:
-            st.warning("Textes insuffisants pour analyse.")
-            st.stop()
-
-        pairs = match_sentences(sentences1, sentences2)
-
-        global_score = np.mean([p["score"] for p in pairs])
+        score, results, matrix = detect_changes(text1, text2)
 
         # =========================
         # 1. SCORE GLOBAL
         # =========================
-        st.subheader("📊 Score global de similarité")
-        st.metric("Similarité", f"{global_score:.2f}%")
+        st.subheader("📊 Niveau d’alignement avec le fournisseur")
+        st.metric("Alignement", f"{score:.2f}%")
 
-        st.progress(min(global_score / 100, 1.0))
-
-        # =========================
-        # 3. RECOMMANDATION
-        # =========================
-        st.subheader("🧠 Recommandation")
-        st.info(recommendation(global_score))
+        st.progress(min(score / 100, 1.0))
 
         # =========================
-        # 2. TABLEAU COMPARATIF
+        # 2. RECOMMANDATION
         # =========================
-        st.subheader("🔎 Comparatif détaillé")
+        st.subheader("🧠 Décision métier")
+        st.info(recommendation(score))
 
-        df = pd.DataFrame(pairs)
+        # =========================
+        # 3. TABLE COMPARATIVE
+        # =========================
+        st.subheader("🔎 Changements détectés")
 
-        # classification visuelle
-        def label(score):
+        df = pd.DataFrame(results)
+
+        def highlight(score):
             if score > 75:
-                return "🟢 similaire"
+                return "🟢 OK"
             elif score > 50:
-                return "🟠 partiel"
+                return "🟠 Différence"
             else:
-                return "🔴 différent"
+                return "🔴 Problème"
 
-        df["niveau"] = df["score"].apply(label)
-        df["score"] = df["score"].round(2)
+        df["statut"] = df["similarité (%)"].apply(highlight)
 
-        st.dataframe(
-            df[["text1", "text2", "score", "niveau"]],
-            use_container_width=True
-        )
+        st.dataframe(df, use_container_width=True)
+
+        # =========================
+        # 4. ALERTES
+        # =========================
+        st.subheader("⚠️ Points d’attention")
+
+        obsolete = df[df["catalogue (Texte 2)"] == "❌ absent"]
+
+        if len(obsolete) > 0:
+            st.warning("Certaines informations du fournisseur ne sont pas présentes dans ton catalogue.")
+            st.dataframe(obsolete)
 
     else:
         st.warning("Veuillez remplir les deux textes.")
