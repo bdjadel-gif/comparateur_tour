@@ -4,16 +4,16 @@ import re
 from sentence_transformers import SentenceTransformer
 
 # =========================
-# CONFIG
+# CONFIG STREAMLIT
 # =========================
 st.set_page_config(
-    page_title="Comparateur de textes",
+    page_title="Comparateur fournisseur / catalogue",
     page_icon="🔍",
     layout="wide"
 )
 
 # =========================
-# MODEL (IA simple)
+# MODEL NLP
 # =========================
 @st.cache_resource
 def load_model():
@@ -32,58 +32,93 @@ def cosine(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-def compare(text1, text2):
+def compare_texts(text1, text2):
 
     s1 = split_sentences(text1)
     s2 = split_sentences(text2)
 
-    if not s1 or not s2:
+    if len(s1) == 0 or len(s2) == 0:
         return 0, []
 
-    e1 = model.encode(s1)
-    e2 = model.encode(s2)
+    emb1 = model.encode(s1)
+    emb2 = model.encode(s2)
 
     results = []
 
-    for i, emb in enumerate(e1):
-        sims = [cosine(emb, e) for e in e2]
-        best = max(sims)
+    for i, e1 in enumerate(emb1):
+        sims = [cosine(e1, e2) for e2 in emb2]
+
+        best_score = max(sims)
 
         results.append({
-            "texte 1": s1[i],
-            "similarité (%)": round(best * 100, 2)
+            "Texte fournisseur (1)": s1[i],
+            "Similarité (%)": round(best_score * 100, 2)
         })
 
-    global_score = np.mean([r["similarité (%)"] for r in results])
+    global_score = np.mean([r["Similarité (%)"] for r in results])
 
     return global_score, results
+
+
+def recommendation(score):
+
+    if score >= 85:
+        return "🟢 Catalogue aligné avec le fournisseur (OK)"
+    elif score >= 65:
+        return "🟠 Quelques différences → mise à jour partielle recommandée"
+    else:
+        return "🔴 Catalogue obsolète → mise à jour nécessaire"
 
 
 # =========================
 # UI
 # =========================
-st.title("🔍 Comparateur de textes touristiques simple")
+st.title("🔍 Comparateur fournisseur vs catalogue")
+st.write("Analyse automatique des différences entre texte fournisseur et catalogue")
 
-text1 = st.text_area("📄 Texte 1 (Fournisseur)", height=200)
-text2 = st.text_area("📄 Texte 2 (Catalogue)", height=200)
+col1, col2 = st.columns(2)
 
-if st.button("Comparer"):
+with col1:
+    text1 = st.text_area("📄 Texte fournisseur (actuel)", height=250)
+
+with col2:
+    text2 = st.text_area("📄 Texte catalogue (ancien)", height=250)
+
+# =========================
+# ACTION
+# =========================
+if st.button("Analyser"):
 
     if text1 and text2:
 
-        score, results = compare(text1, text2)
+        with st.spinner("Analyse en cours..."):
 
-        st.subheader("📊 Score global")
-        st.metric("Similarité", f"{score:.2f}%")
+            score, results = compare_texts(text1, text2)
 
-        score_value = float(score) if score is not None else 0
-score_value = max(0.0, min(score_value / 100, 1.0))
+            # sécurisation du score (IMPORTANT)
+            score_value = float(score) if score is not None else 0
+            score_value = max(0.0, min(score_value / 100, 1.0))
 
-        st.progress(score_value)
+            # =========================
+            # SCORE
+            # =========================
+            st.subheader("📊 Score de similarité global")
 
-        st.subheader("🔎 Détails")
+            st.metric("Similarité", f"{score:.2f}%")
+            st.progress(score_value)
 
-        st.dataframe(results)
+            # =========================
+            # RECOMMANDATION
+            # =========================
+            st.subheader("🧠 Recommandation métier")
+            st.info(recommendation(score))
+
+            # =========================
+            # DÉTAILS
+            # =========================
+            st.subheader("🔎 Analyse détaillée")
+
+            st.dataframe(results, use_container_width=True)
 
     else:
-        st.warning("Remplis les deux textes")
+        st.warning("Veuillez remplir les deux textes avant analyse")
