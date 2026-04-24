@@ -1,194 +1,109 @@
 import streamlit as st
 from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import pandas as pd
 import re
-from scipy.optimize import linear_sum_assignment
 
-# =========================
-# CONFIG
-# =========================
-st.set_page_config(
-    page_title="Comparateur fournisseur / catalogue",
-    page_icon="🔍",
-    layout="wide"
-)
+# --------- INIT ---------
+st.set_page_config(page_title="Comparateur de textes touristiques", layout="wide")
 
-@st.cache_resource
-def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+st.title("🧠 Comparateur de textes touristiques")
+st.write("Analyse de compatibilité entre texte fournisseur (source de vérité) et texte catalogue")
 
-model = load_model()
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# =========================
-# NLP FUNCTIONS
-# =========================
-def split_sentences(text):
-    return [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
+# --------- UTILS ---------
+def split_into_blocks(text):
+    blocks = re.split(r'\n+|\.\s+', text)
+    return [b.strip() for b in blocks if len(b.strip()) > 20]
 
+def embed(text_list):
+    return model.encode(text_list)
 
-def cosine_sim(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def compute_similarity(blocks1, blocks2):
+    emb1 = embed(blocks1)
+    emb2 = embed(blocks2)
+    sim_matrix = cosine_similarity(emb1, emb2)
+    best_scores = sim_matrix.max(axis=1)
+    return best_scores, sim_matrix
 
+# --------- ANALYSE ---------
+def analyze(fournisseur, catalogue):
+    blocks_f = split_into_blocks(fournisseur)
+    blocks_c = split_into_blocks(catalogue)
 
-def explain(score):
-    if score > 0.85:
-        return "Très proche"
-    elif score > 0.65:
-        return "Légère différence"
-    elif score > 0.4:
-        return "Différence notable"
-    else:
-        return "Divergence forte"
+    scores, sim_matrix = compute_similarity(blocks_f, blocks_c)
+    avg_score = float(np.mean(scores)) * 100
 
+    correspondances = []
+    omissions = []
+    modifications = []
 
-# =========================
-# CORE ANALYSIS
-# =========================
-def analyze(text1, text2):
-
-    s1 = split_sentences(text1)
-    s2 = split_sentences(text2)
-
-    if not s1 or not s2:
-        return None
-
-    emb1 = model.encode(s1)
-    emb2 = model.encode(s2)
-
-    matrix = np.zeros((len(s1), len(s2)))
-
-    for i in range(len(s1)):
-        for j in range(len(s2)):
-            matrix[i][j] = cosine_sim(emb1[i], emb2[j])
-
-    # =========================
-    # SCORE GLOBAL
-    # =========================
-    global_score = np.mean(matrix.max(axis=1)) * 100
-
-    # =========================
-    # MATCHING OPTIMAL
-    # =========================
-    cost = 1 - matrix
-    row_ind, col_ind = linear_sum_assignment(cost)
-
-    used_cols = set()
-    results = []
-
-    THRESHOLD = 0.55
-
-    for i, j in zip(row_ind, col_ind):
-
-        score = matrix[i][j]
-        used_cols.add(j)
-
-        status = (
-            "🟢 OK" if score > 0.75 else
-            "🟠 Modifié" if score > THRESHOLD else
-            "🔴 Divergent"
-        )
-
-        results.append({
-            "phrase catalogue": s2[j],
-            "phrase fournisseur": s1[i],
-            "similarité": round(score * 100, 2),
-            "statut": status
-        })
-
-    # Ajouts catalogue
-    for j in range(len(s2)):
-        if j not in used_cols:
-            results.append({
-                "phrase catalogue": s2[j],
-                "phrase fournisseur": "❌ absent",
-                "similarité": 0,
-                "statut": "🟣 Ajout catalogue"
-            })
-
-    return global_score, results, s1, s2
-
-
-# =========================
-# TEXT GENERATION (NOUVEAU)
-# =========================
-def build_improved_catalog(results):
-
-    improved = []
-
-    for r in results:
-
-        cat = r["phrase catalogue"]
-        sup = r["phrase fournisseur"]
-        score = r["similarité"] / 100
-
-        # Ajout catalogue → on ignore dans version alignée
-        if sup == "❌ absent":
-            continue
-
-        # Très bon match → on garde fournisseur
-        if score >= 0.75:
-            improved.append(sup)
-
-        # Modifié → on privilégie fournisseur (version corrigée)
-        elif score >= 0.55:
-            improved.append(sup)
-
-        # Divergent → on signale correction
+    for i, score in enumerate(scores):
+        if score > 0.75:
+            correspondances.append(blocks_f[i])
+        elif score > 0.5:
+            modifications.append(blocks_f[i])
         else:
-            improved.append(f"[À vérifier] {sup}")
+            omissions.append(blocks_f[i])
 
-    return ". ".join(improved) + "."
+    # Détection des ajouts
+    scores_c, _ = compute_similarity(blocks_c, blocks_f)
+    ajouts = []
+    for i, score in enumerate(scores_c):
+        if score < 0.5:
+            ajouts.append(blocks_c[i])
 
+    # Label métier
+    if avg_score >= 95:
+        label = "✅ Réécriture fidèle"
+    elif avg_score >= 80:
+        label = "🟡 Légères différences"
+    elif avg_score >= 60:
+        label = "🟠 Différences notables"
+    else:
+        label = "🔴 Programme différent"
 
-# =========================
-# UI
-# =========================
-st.title("🔍 Comparateur fournisseur / catalogue intelligent")
+    return avg_score, label, blocks_f, correspondances, modifications, omissions, ajouts
 
+# --------- UI ---------
 col1, col2 = st.columns(2)
 
 with col1:
-    text1 = st.text_area("📄 Texte fournisseur", height=250)
+    fournisseur = st.text_area("📄 Texte fournisseur (source de vérité)", height=300)
 
 with col2:
-    text2 = st.text_area("📄 Texte catalogue", height=250)
+    catalogue = st.text_area("📝 Texte catalogue", height=300)
 
+if st.button("🔍 Comparer les textes"):
 
-# =========================
-# RUN
-# =========================
-if st.button("Analyser"):
+    if fournisseur and catalogue:
+        score, label, structure, corr, modif, omis, ajouts = analyze(fournisseur, catalogue)
 
-    if text1 and text2:
+        st.subheader(f"📊 Score de compatibilité : {round(score,2)}%")
+        st.markdown(f"### {label}")
 
-        score, results, s1, s2 = analyze(text1, text2)
+        st.divider()
 
-        # =========================
-        # SCORE
-        # =========================
-        st.subheader("📊 Score de compatibilité")
-        st.metric("Compatibilité", f"{score:.2f}%")
-        st.progress(min(score / 100, 1.0))
+        st.subheader("🧩 Structure commune")
+        for s in structure:
+            st.write(f"- {s}")
 
-        # =========================
-        # TABLE
-        # =========================
-        st.subheader("📋 Analyse détaillée")
+        st.subheader("✅ Correspondances fortes")
+        for c in corr:
+            st.write(f"- {c}")
 
-        df = pd.DataFrame(results)
+        st.subheader("⚠️ Modifications")
+        for m in modif:
+            st.write(f"- {m}")
 
-        st.dataframe(df, use_container_width=True)
+        st.subheader("❌ Omissions")
+        for o in omis:
+            st.write(f"- {o}")
 
-        # =========================
-        # 🔥 NOUVEAU : TEXTE AMÉLIORÉ
-        # =========================
-        st.subheader("✍️ Proposition de catalogue amélioré")
-
-        improved_text = build_improved_catalog(results)
-
-        st.info("Version du catalogue alignée avec le fournisseur :")
-        st.write(improved_text)
+        st.subheader("➕ Ajouts")
+        for a in ajouts:
+            st.write(f"- {a}")
 
     else:
         st.warning("Veuillez remplir les deux textes")
