@@ -76,7 +76,10 @@ if st.button("Comparer"):
         st.subheader("📊 Score global")
         st.metric("Similarité", f"{score:.2f}%")
 
-        st.progress(min(score / 100, 1.0))
+        score_value = float(score) if score is not None else 0
+score_value = max(0.0, min(score_value / 100, 1.0))
+
+st.progress(score_value)
 
         st.subheader("🔎 Détails")
 
